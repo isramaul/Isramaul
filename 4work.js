@@ -1,4 +1,4 @@
-const BATCH_SIZE = 40; 
+const BATCH_SIZE = 20; 
 const { parentPort } = require('worker_threads');
 const crypto = require('crypto');
 const fs = require('fs');
