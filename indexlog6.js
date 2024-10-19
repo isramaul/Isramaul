@@ -41,7 +41,7 @@ class WorkerPool {
 
     // Create a worker and handle its messages, errors, and exit
     createWorker(index) {
-        const worker = new Worker(path.join(__dirname, '3work.js'));  // Path to worker script (adjust if needed)
+        const worker = new Worker(path.join(__dirname, '4work.js'));  // Path to worker script (adjust if needed)
         worker.on('message', message => this.onMessage(worker, message));  // Handle worker messages
         worker.on('error', err => this.onError(worker, err));  // Handle worker errors
         worker.on('exit', code => this.onExit(worker, code, index));  // Handle worker exit
