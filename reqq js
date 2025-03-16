@@ -1,0 +1,164 @@
+import fs from 'fs';
+import { ethers } from 'ethers';
+
+import https from 'https';
+import axios from 'axios';
+const httpsAgent = new https.Agent({ keepAlive: true });
+
+import readline from 'readline';
+import pLimit from 'p-limit';
+
+// Constants
+const BATCH_SIZE = 13230; // Number of addresses to process per batch
+const limit = pLimit(92);
+//const limit = pLimit(80); // Limit concurrent processing within each batch
+const TIMEOUT_THRESHOLD = 2114; // 60 seconds timeout threshold for inactivity check
+
+// Initialize the provider using HTTPS
+let provider = new ethers.providers.JsonRpcProvider(
+    'https://rpc.ankr.com/eth/'
+);
+
+// Variables to track activity
+let requestCount = 0;
+let processedPosition = 0;
+let lastActivityTime = Date.now(); // Track last activity time
+
+// Load last processed position and initialize requestCount
+function initializeProcessedPosition() {
+    try {
+        const data = fs.readFileSync('processedPosition.txt', 'utf8');
+        const position = parseInt(data, 10);
+        requestCount = position; // Initialize requestCount from processed position
+        return position;
+    } catch (error) {
+        requestCount = 0; // Default to 0 if file does not exist
+        return 0;
+    }
+}
+
+// Save current processed position and requestCount to file
+function saveProcessedPosition(position) {
+    fs.writeFileSync('processedPosition.txt', position.toString());
+    requestCount = position; // Sync requestCount with saved position
+}
+
+// Function to log address, mnemonic, and balance to file
+function logToFile(data, address) {
+    fs.appendFile('win.txt', data + '\n', (err) => {
+        if (err) {
+            fs.writeFileSync('winFile.txt', data + '\n');
+            fs.appendFileSync('winLog.txt', `Write to file failed: ${address}, error: ${err}\n`);
+            console.error('Write to file failed:', err);
+        }
+    });
+}
+
+// Function to introduce delay (sleep)
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Update last activity time
+function updateLastActivityTime() {
+    lastActivityTime = Date.now();
+}
+
+// Function to check for inactivity timeout and trigger reconnect if necessary
+function checkTimeout() {
+    if (Date.now() - lastActivityTime > TIMEOUT_THRESHOLD) {
+      //  console.warn('\x1b[33mIdle timeout detected.\x1b[0m');
+    }
+}
+
+// Function to process a single address with retry mechanism
+async function processAddress(addressData, retries = 7, delayMs = 1000, timeoutMs = 360990) {
+    const address = addressData[0];
+
+    for (let i = 0; i < retries; i++) {
+        try {
+            // Fetch balance with a race against a timeout
+            const balance = await Promise.race([
+                provider.getBalance(address),
+                delay(timeoutMs).then(() => { throw new Error('Request timeout'); })
+            ]);
+
+            // Update activity time after successful response
+            updateLastActivityTime();
+
+            requestCount++;
+            return { address, balance, mnemonic: addressData[1] };
+
+        } catch (err) {
+           // console.error(err)
+            fs.appendFileSync('error.txt', `, error: ${err}\n`);
+            delayMs *= 2; // Exponential backoff
+        }
+    }
+    return { address, balance: ethers.BigNumber.from(0), mnemonic: addressData[1] };
+}
+
+// Process batch of addresses
+async function processBatch(addressBatch) {
+    const promises = addressBatch.map(addressData =>
+        limit(async () => {
+            const { address, balance, mnemonic } = await processAddress(addressData);
+
+            if (balance.gt(0)) {
+                const balanceInEther = ethers.utils.formatEther(balance);
+                logToFile(`Address: ${address},\nMnemonic Phrase: ${mnemonic}\nBalance: ${balanceInEther} ETH\nBlockchain: ETHEREUM`);
+            } else {
+              //  console.log(`\x1b[30m‎‎ ‎ ‎  ${requestCount}\x1b[0m \x1b[32m Address ETHEREUM Chain : ${address}\x1b[0m`);
+                console.log(`\x1b[32m${requestCount}\x1b[0m \x1b[32m Wallet : ${mnemonic}\x1b[0m`);
+               // console.log(`\x1b[32m${requestCount}\x1b[0m \x1b[32m \x1b[0m`);
+            }
+        })
+    );
+
+    await Promise.all(promises);
+}
+
+// Main function to read the file in batches and resume from last processed position
+(async () => {
+    processedPosition = initializeProcessedPosition();
+    console.log(`Resuming from position: ${processedPosition}`);
+    console.log(`Initial requestCount: ${requestCount}`);
+
+    const fileStream = fs.createReadStream('hits');
+    const rl = readline.createInterface({
+        input: fileStream,
+        crlfDelay: Infinity
+    });
+
+    let addressBatch = [];
+    let currentPosition = 0;
+
+    for await (const line of rl) {
+        if (currentPosition < processedPosition) {
+            currentPosition++;
+            continue; // Skip already processed lines
+        }
+
+        const addressData = line.split(',');
+        addressBatch.push(addressData);
+        currentPosition++;
+
+        // When batch size is reached, process the batch, save position, and reset the array
+        if (addressBatch.length === BATCH_SIZE) {
+            await processBatch(addressBatch);
+            saveProcessedPosition(currentPosition);
+            addressBatch = [];
+        }
+    }
+
+    // Process any remaining addresses in the last batch
+    if (addressBatch.length > 0) {
+        await processBatch(addressBatch);
+        saveProcessedPosition(currentPosition);
+    }
+
+    console.log(`Total requests made: \x1b[32m${requestCount}\x1b[0m`);
+})();
+
+// Start the inactivity checker
+setInterval(checkTimeout, 3114); // Check for inactivity every 10 seconds
